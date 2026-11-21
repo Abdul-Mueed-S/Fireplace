@@ -5,10 +5,11 @@ import android.os.PowerManager
 /**
  * Decides how hard the CPU workers may run, once per second.
  *
- * Rule of thumb: warm up slowly, cool down fast. Battery temperature lags behind the
- * chip temperature, so we also watch Android's own thermal status and thermal-headroom
- * forecast: light throttling stops us from ramping up further, and a high headroom
- * forecast makes us back off early.
+ * The chip, not the battery, is the real limit, so the governor steers by Android's thermal
+ * headroom forecast: ramp up while there is room below [HeatLevel.targetHeadroom], ease off
+ * when above it. Battery temperature is only a cap, and the plain battery rule is used as a
+ * fallback if the phone doesn't report headroom. Light throttling is normal when warm and no
+ * longer freezes the ramp; moderate throttling (or worse) backs off hard.
  */
 class ThermalGovernor(private val level: HeatLevel) {
 
@@ -16,13 +17,17 @@ class ThermalGovernor(private val level: HeatLevel) {
         private set
 
     fun update(batteryTempC: Float, thermalStatus: Int, headroom: Float): Float {
-        val error = level.targetC - batteryTempC
-        var delta = when {
-            error > 0f -> (0.02f * error).coerceAtMost(0.04f)  // below target: ramp up gently
-            else -> 0.15f * error                              // above target: ease off quickly
+        var delta = if (headroom.isNaN()) {
+            val e = level.targetC - batteryTempC
+            if (e > 0f) (0.02f * e).coerceAtMost(0.04f) else 0.15f * e
+        } else {
+            val e = level.targetHeadroom - headroom   // positive = room to heat more
+            if (e > 0f) (0.4f * e).coerceAtMost(0.04f) else e
         }
-        if (thermalStatus >= PowerManager.THERMAL_STATUS_LIGHT) delta = delta.coerceAtMost(0f)
+        // battery is a cap: above its target, never ramp up and ease off
+        if (batteryTempC > level.targetC) delta = delta.coerceAtMost(0.15f * (level.targetC - batteryTempC))
         if (!headroom.isNaN() && headroom >= HeatLevel.HEADROOM_BACKOFF) delta = -0.10f
+        if (thermalStatus >= PowerManager.THERMAL_STATUS_MODERATE) delta = -0.10f
         duty = (duty + delta).coerceIn(0f, level.maxDuty)
         return duty
     }

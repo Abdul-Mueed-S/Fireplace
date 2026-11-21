@@ -47,6 +47,8 @@ class HeatService : Service() {
     private var governor: ThermalGovernor? = null
     private var level = HeatLevel.MEDIUM
     private var endAtMs = 0L
+    private var lastReading: Reading? = null
+    private var lastPercent = -1
 
     @Volatile private var running = false
     @Volatile private var dutyPercent = 0
@@ -83,6 +85,7 @@ class HeatService : Service() {
         val minutes = intent.getIntExtra(EXTRA_MINUTES, 30).coerceIn(1, 180)
         endAtMs = SystemClock.elapsedRealtime() + minutes * 60_000L
         governor = ThermalGovernor(level)
+        LogWriter.start(this, level, minutes)
 
         createChannel()
         val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
@@ -101,6 +104,8 @@ class HeatService : Service() {
     }
 
     private fun stopFire(reason: String?) {
+        LogWriter.row(level, lastReading, 0f, lastPercent, "stop: " + (reason ?: "put out by user"))
+        LogWriter.end()
         HeatState.ui.value = HeatState.ui.value.copy(
             running = false, duty = 0f, remainingSec = 0, stopReason = reason
         )
@@ -153,6 +158,7 @@ class HeatService : Service() {
     private fun onTick() {
         val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val reading = Sensors.read(this)
+        lastReading = reading
         val tempC = reading.batteryC
         val thermal = reading.thermalStatus
         val headroom = reading.headroom
@@ -160,6 +166,7 @@ class HeatService : Service() {
         val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
         val percent = if (levelRaw >= 0 && scale > 0) levelRaw * 100 / scale else 100
         val plugged = (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        lastPercent = percent
 
         val remainingSec = ((endAtMs - SystemClock.elapsedRealtime()) / 1000).toInt().coerceAtLeast(0)
 
@@ -179,6 +186,7 @@ class HeatService : Service() {
 
         val duty = governor!!.update(tempC!!, thermal, headroom)
         dutyPercent = (duty * 100).toInt()
+        LogWriter.row(level, reading, duty, percent)
 
         HeatState.ui.value = HeatUiState(
             running = true, level = level, reading = reading,

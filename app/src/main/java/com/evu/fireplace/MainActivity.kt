@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -41,6 +42,12 @@ class MainActivity : AppCompatActivity() {
 
         b.toggleButton.setOnClickListener {
             if (HeatState.ui.value.running) stopFire() else requestStart()
+        }
+        b.btnShareLog.setOnClickListener { shareLog() }
+        b.btnClearLogs.setOnClickListener {
+            val n = LogWriter.clear(this)
+            val msg = if (n == 0) "No old logs to clear." else "Cleared $n log file(s)."
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
 
         lifecycleScope.launch {
@@ -98,6 +105,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopFire() {
         startService(Intent(this, HeatService::class.java).setAction(HeatService.ACTION_STOP))
+    }
+
+    private fun shareLog() {
+        val file = LogWriter.latest(this)
+        if (file == null) {
+            Toast.makeText(this, "No log yet - light the fire first.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val send = Intent(Intent.ACTION_SEND)
+            .setType("text/csv")
+            .putExtra(Intent.EXTRA_STREAM, uri)
+            .putExtra(Intent.EXTRA_SUBJECT, file.name)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivity(Intent.createChooser(send, "Share log"))
     }
 
     private fun render(s: HeatUiState) {
