@@ -15,11 +15,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.evu.fireplace.databinding.ActivityMainBinding
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var b: ActivityMainBinding
+
+    /** Latest sensor snapshot taken by the activity while the fire is off. */
+    private var idleReading: Reading? = null
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -41,7 +45,17 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                HeatState.ui.collect { render(it) }
+                launch { HeatState.ui.collect { render(it) } }
+                // While the fire is off the service isn't reporting, so read the sensors ourselves.
+                launch {
+                    while (true) {
+                        if (!HeatState.ui.value.running) {
+                            idleReading = Sensors.read(this@MainActivity)
+                            render(HeatState.ui.value)
+                        }
+                        delay(2000)
+                    }
+                }
             }
         }
     }
@@ -87,17 +101,48 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun render(s: HeatUiState) {
+        val r = if (s.running) s.reading else (idleReading ?: s.reading)
+
         b.fireView.intensity = if (s.running) 0.25f + 0.75f * (s.duty / s.level.maxDuty).coerceIn(0f, 1f) else 0f
-        b.tempValue.text = s.batteryTempC?.let { "%.1f°C".format(it) } ?: "--°C"
+        b.tempValue.text = r?.batteryC?.let { "%.1f°C".format(it) } ?: "--°C"
 
         b.statusText.text = when {
-            s.running -> "${s.level.label} · ${s.remainingSec / 60}:%02d left · power ${(s.duty * 100).toInt()}%%".format(s.remainingSec % 60)
+            s.running -> "Battery · ${s.level.label} · ${s.remainingSec / 60}:%02d left · power ${(s.duty * 100).toInt()}%%".format(s.remainingSec % 60)
             s.stopReason != null -> s.stopReason
             else -> "Battery temperature"
         }
+        b.sensorText.text = sensorSummary(r)
 
         b.toggleButton.text = if (s.running) "Put out the fire" else "Light the fire"
         for (i in 0 until b.levelGroup.childCount) b.levelGroup.getChildAt(i).isEnabled = !s.running
         for (i in 0 until b.timerGroup.childCount) b.timerGroup.getChildAt(i).isEnabled = !s.running
+    }
+
+    private fun sensorSummary(r: Reading?): String {
+        if (r == null) return ""
+        val lines = mutableListOf<String>()
+        val chips = listOfNotNull(
+            r.cpuC?.let { "CPU %.1f°C".format(it) },
+            r.gpuC?.let { "GPU %.1f°C".format(it) },
+            r.skinC?.let { "Skin %.1f°C".format(it) },
+        )
+        if (chips.isNotEmpty()) {
+            lines += chips.joinToString("  ·  ")
+        } else {
+            lines += "CPU/GPU sensors are blocked by Android on this phone"
+        }
+        if (!r.headroom.isNaN()) lines += "Chip stress %d%%  ·  throttling: %s".format((r.headroom * 100).toInt(), thermalName(r.thermalStatus))
+        else lines += "Throttling: %s".format(thermalName(r.thermalStatus))
+        return lines.joinToString("\n")
+    }
+
+    private fun thermalName(status: Int): String = when (status) {
+        0 -> "none"
+        1 -> "light"
+        2 -> "moderate"
+        3 -> "severe"
+        4 -> "critical"
+        5 -> "emergency"
+        else -> "shutdown"
     }
 }

@@ -122,7 +122,7 @@ class HeatService : Service() {
     // ---------------------------------------------------------------- heat workers
 
     private fun startWorkers() {
-        val count = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
+        val count = (Runtime.getRuntime().availableProcessors() * level.coreFraction).toInt().coerceAtLeast(1)
         repeat(count) { i ->
             val t = Thread({
                 var x = 1.0 + i
@@ -152,16 +152,14 @@ class HeatService : Service() {
 
     private fun onTick() {
         val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val rawTemp = battery?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
-        val tempC = if (rawTemp == Int.MIN_VALUE) null else rawTemp / 10f
+        val reading = Sensors.read(this)
+        val tempC = reading.batteryC
+        val thermal = reading.thermalStatus
+        val headroom = reading.headroom
         val levelRaw = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
         val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
         val percent = if (levelRaw >= 0 && scale > 0) levelRaw * 100 / scale else 100
         val plugged = (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
-
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        val thermal = if (Build.VERSION.SDK_INT >= 29) pm.currentThermalStatus else 0
-        val headroom = if (Build.VERSION.SDK_INT >= 30) pm.getThermalHeadroom(10) else Float.NaN
 
         val remainingSec = ((endAtMs - SystemClock.elapsedRealtime()) / 1000).toInt().coerceAtLeast(0)
 
@@ -183,7 +181,7 @@ class HeatService : Service() {
         dutyPercent = (duty * 100).toInt()
 
         HeatState.ui.value = HeatUiState(
-            running = true, level = level, batteryTempC = tempC, thermalStatus = thermal,
+            running = true, level = level, reading = reading,
             duty = duty, remainingSec = remainingSec,
         )
         getSystemService(NotificationManager::class.java)

@@ -5,8 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 data class HeatUiState(
     val running: Boolean = false,
     val level: HeatLevel = HeatLevel.MEDIUM,
-    val batteryTempC: Float? = null,
-    val thermalStatus: Int = 0,
+    val reading: Reading? = null,
     val duty: Float = 0f,
     val remainingSec: Int = 0,
     /** Why the fire last went out (null if it never ran or the user stopped it). */
