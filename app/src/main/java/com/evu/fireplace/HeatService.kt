@@ -7,9 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -25,8 +23,13 @@ import kotlin.math.sqrt
 
 /**
  * Foreground service that burns CPU in short bursts (duty cycle) to make heat, under a
- * once-per-second safety check. It stops itself on: hard temperature ceiling, system
- * thermal throttling, charger plugged in, low battery, unreadable temperature, or timer end.
+ * once-per-second safety check.
+ *
+ * It refuses to start if the phone is charging, low on battery, already warm, or its battery
+ * sensor looks wrong. While running, the fire is put out on: battery too hot, battery warmed
+ * too much since the start, processor sensor way up, Android thermal throttling (moderate or
+ * worse), charger plugged in, low battery, an unreadable battery temperature, an error in
+ * the safety check itself, or the timer ending.
  */
 class HeatService : Service() {
 
@@ -36,8 +39,10 @@ class HeatService : Service() {
         const val EXTRA_LEVEL = "level"
         const val EXTRA_MINUTES = "minutes"
 
-        private const val CHANNEL_ID = "fireplace"
+        private const val CHANNEL_RUNNING = "fireplace"
+        private const val CHANNEL_ALERT = "fireplace_alert"
         private const val NOTIF_ID = 1
+        private const val ALERT_ID = 2
         private const val PERIOD_MS = 100L
     }
 
@@ -47,8 +52,10 @@ class HeatService : Service() {
     private var governor: ThermalGovernor? = null
     private var level = HeatLevel.MEDIUM
     private var endAtMs = 0L
+    private var startBatteryC = Float.NaN
+    private var startCpuC: Float? = null
     private var lastReading: Reading? = null
-    private var lastPercent = -1
+    private var lastMode = ""
 
     @Volatile private var running = false
     @Volatile private var dutyPercent = 0
@@ -57,7 +64,12 @@ class HeatService : Service() {
     private val ticker = object : Runnable {
         override fun run() {
             if (!running) return
-            onTick()
+            try {
+                onTick()
+            } catch (e: Exception) {
+                // If the safety check itself breaks, never keep heating blind.
+                stopFire("Safety check failed (" + e.javaClass.simpleName + ") - fire put out.")
+            }
             if (running) handler.postDelayed(this, 1000)
         }
     }
@@ -65,9 +77,22 @@ class HeatService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> if (!running) start(intent)
-            ACTION_STOP -> stopFire(reason = null)
+        val action = intent?.action
+
+        // Anything started with startForegroundService() must call startForeground() promptly,
+        // even if we then refuse to run, or Android kills the app.
+        if (!running && action == ACTION_START) {
+            createChannels()
+            ServiceCompat.startForeground(this, NOTIF_ID, buildNotification("Starting…"), foregroundType())
+        }
+
+        when (action) {
+            ACTION_START -> if (!running && intent != null) {
+                val lvl = HeatLevel.values()
+                    .getOrElse(intent.getIntExtra(EXTRA_LEVEL, HeatLevel.MEDIUM.ordinal)) { HeatLevel.MEDIUM }
+                start(lvl, intent.getIntExtra(EXTRA_MINUTES, 30))
+            }
+            ACTION_STOP -> if (running) stopFire(null) else stopSelf()
             else -> if (!running) stopSelf()
         }
         return START_NOT_STICKY
@@ -78,39 +103,68 @@ class HeatService : Service() {
         super.onDestroy()
     }
 
+    private fun foregroundType(): Int =
+        if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
+
     // ---------------------------------------------------------------- start / stop
 
-    private fun start(intent: Intent) {
-        level = HeatLevel.values().getOrElse(intent.getIntExtra(EXTRA_LEVEL, 1)) { HeatLevel.MEDIUM }
-        val minutes = intent.getIntExtra(EXTRA_MINUTES, 30).coerceIn(1, 180)
-        endAtMs = SystemClock.elapsedRealtime() + minutes * 60_000L
-        governor = ThermalGovernor(level)
-        LogWriter.start(this, level, minutes)
+    private fun start(newLevel: HeatLevel, minutes: Int) {
+        level = newLevel
+        val mins = minutes.coerceIn(1, HeatLevel.MAX_MINUTES)
 
-        createChannel()
-        val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
-        ServiceCompat.startForeground(this, NOTIF_ID, buildNotification("Starting…"), type)
+        // Refuse to start in unsafe conditions.
+        val r = Sensors.read(this, 0L)
+        val bt = r.batteryC
+        val refusal = when {
+            bt == null -> "Couldn't read the battery temperature."
+            bt < HeatLevel.MIN_PLAUSIBLE_BATTERY_C ->
+                "Battery sensor reads %.1f°C - too cold, or this phone reports it oddly. Not lighting the fire.".format(bt)
+            r.plugged -> "Unplug the charger first."
+            r.percent <= HeatLevel.MIN_BATTERY_PERCENT -> "Battery is at ${r.percent}% - charge it first."
+            bt >= HeatLevel.START_MAX_BATTERY_C -> "Phone is already warm (%.0f°C) - let it cool a little first.".format(bt)
+            else -> null
+        }
+        if (refusal != null || bt == null) {
+            val why = refusal ?: "Couldn't read the battery temperature."
+            HeatState.ui.value = HeatUiState(stopReason = why, level = level)
+            postAlert(why)
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        endAtMs = SystemClock.elapsedRealtime() + mins * 60_000L
+        startBatteryC = bt
+        startCpuC = r.cpuC
+        lastReading = r
+        lastMode = ""
+        governor = ThermalGovernor(level)
+        LogWriter.start(this, level, mins)
 
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "fireplace:heat").apply {
-            acquire(minutes * 60_000L + 60_000L) // auto-release even if we crash
+            setReferenceCounted(false)
+            acquire((HeatLevel.MAX_MINUTES + 5) * 60_000L) // released in halt(); this is only a backstop
         }
 
         running = true
         dutyPercent = 0
         startWorkers()
-        HeatState.ui.value = HeatUiState(running = true, level = level, remainingSec = minutes * 60)
+        HeatState.ui.value = HeatUiState(
+            running = true, level = level, reading = r, remainingSec = mins * 60, mode = "boost",
+        )
         handler.post(ticker) // first safety check runs immediately
     }
 
     private fun stopFire(reason: String?) {
-        LogWriter.row(level, lastReading, 0f, lastPercent, "stop: " + (reason ?: "put out by user"))
+        LogWriter.row(level, lastReading, 0f, lastMode, "stop: " + (reason ?: "put out by user"))
         LogWriter.end()
         HeatState.ui.value = HeatState.ui.value.copy(
-            running = false, duty = 0f, remainingSec = 0, stopReason = reason
+            running = false, duty = 0f, remainingSec = 0, mode = "", stopReason = reason,
         )
         halt()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        if (reason != null) postAlert(reason)
         stopSelf()
     }
 
@@ -156,26 +210,25 @@ class HeatService : Service() {
     // ---------------------------------------------------------------- safety loop
 
     private fun onTick() {
-        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val reading = Sensors.read(this)
-        lastReading = reading
-        val tempC = reading.batteryC
-        val thermal = reading.thermalStatus
-        val headroom = reading.headroom
-        val levelRaw = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-        val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
-        val percent = if (levelRaw >= 0 && scale > 0) levelRaw * 100 / scale else 100
-        val plugged = (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
-        lastPercent = percent
-
+        val r = Sensors.read(this, 1000L)
+        lastReading = r
+        val bt = r.batteryC
+        if (bt == null || bt < HeatLevel.MIN_PLAUSIBLE_BATTERY_C) {
+            stopFire("Couldn't read a sensible battery temperature - fire put out.")
+            return
+        }
+        val cpu = r.cpuC
+        val cpuBase = startCpuC
         val remainingSec = ((endAtMs - SystemClock.elapsedRealtime()) / 1000).toInt().coerceAtLeast(0)
 
         val reason = when {
-            tempC == null -> "Couldn't read the battery temperature."
-            tempC >= HeatLevel.HARD_CEILING_C -> "Battery reached %.1f°C - fire put out.".format(tempC)
-            thermal >= PowerManager.THERMAL_STATUS_MODERATE -> "Android reported thermal throttling - fire put out."
-            plugged -> "Charger connected - fire put out."
-            percent <= HeatLevel.MIN_BATTERY_PERCENT -> "Battery is at $percent% - fire put out."
+            bt >= HeatLevel.HARD_CEILING_C -> "Battery reached %.1f°C - fire put out.".format(bt)
+            bt - startBatteryC >= HeatLevel.MAX_RISE_C -> "Battery warmed by %.0f°C - fire put out.".format(bt - startBatteryC)
+            cpu != null && cpu >= HeatLevel.CPU_STOP_C && (cpuBase == null || cpu - cpuBase >= HeatLevel.CPU_STOP_RISE_C) ->
+                "Processor reached %.0f°C - fire put out.".format(cpu)
+            r.thermalStatus >= PowerManager.THERMAL_STATUS_MODERATE -> "Android reported thermal throttling - fire put out."
+            r.plugged -> "Charger connected - fire put out."
+            r.percent <= HeatLevel.MIN_BATTERY_PERCENT -> "Battery is at ${r.percent}% - fire put out."
             remainingSec <= 0 -> "Timer finished."
             else -> null
         }
@@ -184,37 +237,41 @@ class HeatService : Service() {
             return
         }
 
-        val duty = governor!!.update(tempC!!, thermal, headroom)
+        val gov = governor ?: return
+        val duty = gov.update(bt, r.thermalStatus, r.headroom)
         dutyPercent = (duty * 100).toInt()
-        LogWriter.row(level, reading, duty, percent)
+        lastMode = gov.mode.label
+        LogWriter.row(level, r, duty, lastMode)
 
         HeatState.ui.value = HeatUiState(
-            running = true, level = level, reading = reading,
-            duty = duty, remainingSec = remainingSec,
+            running = true, level = level, reading = r, duty = duty,
+            remainingSec = remainingSec, mode = lastMode,
         )
-        getSystemService(NotificationManager::class.java)
-            .notify(NOTIF_ID, buildNotification("%s · %.1f°C · %d min left".format(level.label, tempC, (remainingSec + 59) / 60)))
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIF_ID,
+            buildNotification("%s · %.1f°C · %d min left".format(level.label, bt, (remainingSec + 59) / 60)),
+        )
     }
 
-    // ---------------------------------------------------------------- notification
+    // ---------------------------------------------------------------- notifications
 
-    private fun createChannel() {
+    private fun createChannels() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Fireplace", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_RUNNING, "Fireplace running", NotificationManager.IMPORTANCE_LOW)
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_ALERT, "Fireplace went out", NotificationManager.IMPORTANCE_DEFAULT)
         )
     }
 
     private fun buildNotification(text: String): Notification {
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), flags)
         val stop = PendingIntent.getService(
-            this, 1, Intent(this, HeatService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            this, 1, Intent(this, HeatService::class.java).setAction(ACTION_STOP), flags
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_RUNNING)
             .setSmallIcon(R.drawable.ic_flame)
             .setContentTitle("Fireplace is on")
             .setContentText(text)
@@ -223,5 +280,20 @@ class HeatService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
+    }
+
+    /** Tells the person why the fire went out (or never started), even if the app isn't open. */
+    private fun postAlert(text: String) {
+        createChannels()
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), flags)
+        val n = NotificationCompat.Builder(this, CHANNEL_ALERT)
+            .setSmallIcon(R.drawable.ic_flame)
+            .setContentTitle("Fireplace went out")
+            .setContentText(text)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(ALERT_ID, n)
     }
 }

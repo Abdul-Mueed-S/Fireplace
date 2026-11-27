@@ -54,10 +54,11 @@ class MainActivity : AppCompatActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { HeatState.ui.collect { render(it) } }
                 // While the fire is off the service isn't reporting, so read the sensors ourselves.
+                // Some phones rate-limit the chip-stress call, so ask for it only every few seconds.
                 launch {
                     while (true) {
                         if (!HeatState.ui.value.running) {
-                            idleReading = Sensors.read(this@MainActivity)
+                            idleReading = Sensors.read(this@MainActivity, 8000L)
                             render(HeatState.ui.value)
                         }
                         delay(2000)
@@ -129,7 +130,10 @@ class MainActivity : AppCompatActivity() {
         b.tempValue.text = r?.batteryC?.let { "%.1f°C".format(it) } ?: "--°C"
 
         b.statusText.text = when {
-            s.running -> "Battery · ${s.level.label} · ${s.remainingSec / 60}:%02d left · power ${(s.duty * 100).toInt()}%%".format(s.remainingSec % 60)
+            s.running -> {
+                val left = "%d:%02d".format(s.remainingSec / 60, s.remainingSec % 60)
+                "${s.level.label} · ${modeText(s.mode)} · $left left · power ${(s.duty * 100).toInt()}%"
+            }
             s.stopReason != null -> s.stopReason
             else -> "Battery temperature"
         }
@@ -138,6 +142,13 @@ class MainActivity : AppCompatActivity() {
         b.toggleButton.text = if (s.running) "Put out the fire" else "Light the fire"
         for (i in 0 until b.levelGroup.childCount) b.levelGroup.getChildAt(i).isEnabled = !s.running
         for (i in 0 until b.timerGroup.childCount) b.timerGroup.getChildAt(i).isEnabled = !s.running
+    }
+
+    private fun modeText(mode: String): String = when (mode) {
+        "boost" -> "heating up fast"
+        "hold" -> "holding heat"
+        "battery-only" -> "battery-only mode"
+        else -> mode
     }
 
     private fun sensorSummary(r: Reading?): String {
@@ -153,8 +164,11 @@ class MainActivity : AppCompatActivity() {
         } else {
             lines += "CPU/GPU sensors are blocked by Android on this phone"
         }
-        if (!r.headroom.isNaN()) lines += "Chip stress %d%%  ·  throttling: %s".format((r.headroom * 100).toInt(), thermalName(r.thermalStatus))
-        else lines += "Throttling: %s".format(thermalName(r.thermalStatus))
+        if (!r.headroom.isNaN()) {
+            lines += "Chip stress %d%%  ·  throttling: %s".format((r.headroom * 100).toInt(), thermalName(r.thermalStatus))
+        } else {
+            lines += "Chip stress not reported by this phone  ·  throttling: %s".format(thermalName(r.thermalStatus))
+        }
         return lines.joinToString("\n")
     }
 

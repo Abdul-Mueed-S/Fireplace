@@ -10,11 +10,14 @@ import java.util.Locale
 /**
  * Writes one CSV file per fire session (one row per second) into the app's private
  * `files/logs/` folder, so you can study how the phone behaves. Share it from the app.
+ * Only the newest [KEEP_FILES] logs are kept.
  */
 object LogWriter {
 
+    private const val KEEP_FILES = 20
+
     private const val HEADER =
-        "elapsed_s,time,level,battery_c,cpu_c,gpu_c,skin_c,headroom,thermal,duty_pct,battery_pct,event"
+        "elapsed_s,time,level,battery_c,cpu_c,gpu_c,skin_c,headroom,thermal,duty_pct,battery_pct,mode,event"
 
     private var file: File? = null
     private var startMs = 0L
@@ -23,8 +26,14 @@ object LogWriter {
         File(context.filesDir, "logs").apply { mkdirs() }
 
     fun start(context: Context, level: HeatLevel, minutes: Int) {
+        val dir = logsDir(context)
+        dir.listFiles { f -> f.extension == "csv" }
+            ?.sortedByDescending { it.lastModified() }
+            ?.drop(KEEP_FILES - 1)
+            ?.forEach { it.delete() }
+
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val f = File(logsDir(context), "fireplace_${stamp}_${level.label.lowercase(Locale.US)}.csv")
+        val f = File(dir, "fireplace_${stamp}_${level.label.lowercase(Locale.US)}.csv")
         try {
             f.writeText(HEADER + "\n")
         } catch (e: Exception) {
@@ -32,10 +41,10 @@ object LogWriter {
         }
         file = f
         startMs = SystemClock.elapsedRealtime()
-        row(level, null, 0f, -1, "start ${minutes}min")
+        row(level, null, 0f, "", "start ${minutes}min")
     }
 
-    fun row(level: HeatLevel, r: Reading?, duty: Float, batteryPercent: Int, event: String = "") {
+    fun row(level: HeatLevel, r: Reading?, duty: Float, mode: String, event: String = "") {
         val f = file ?: return
         val elapsed = (SystemClock.elapsedRealtime() - startMs) / 1000
         val clock = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
@@ -51,7 +60,8 @@ object LogWriter {
             num(r?.headroom),
             r?.thermalStatus?.toString() ?: "",
             (duty * 100).toInt().toString(),
-            if (batteryPercent >= 0) batteryPercent.toString() else "",
+            r?.percent?.toString() ?: "",
+            mode,
             event.replace(",", ";"),
         ).joinToString(",")
         try {

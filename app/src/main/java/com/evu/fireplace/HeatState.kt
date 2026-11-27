@@ -8,7 +8,9 @@ data class HeatUiState(
     val reading: Reading? = null,
     val duty: Float = 0f,
     val remainingSec: Int = 0,
-    /** Why the fire last went out (null if it never ran or the user stopped it). */
+    /** "boost", "hold" or "battery-only" while running. */
+    val mode: String = "",
+    /** Why the fire last went out or refused to start (null if it never ran or the user stopped it). */
     val stopReason: String? = null,
 )
 
