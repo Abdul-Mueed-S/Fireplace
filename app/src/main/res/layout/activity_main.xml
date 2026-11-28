@@ -497,6 +497,15 @@
                         android:text="90 min" />
                 </com.google.android.material.button.MaterialButtonToggleGroup>
 
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/switchScreenOn"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:text="Keep the screen on while burning"
+                    android:textColor="@color/text_primary"
+                    android:textSize="14sp" />
+
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/toggleButton"
                     android:layout_width="match_parent"

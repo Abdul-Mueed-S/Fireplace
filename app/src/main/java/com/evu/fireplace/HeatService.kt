@@ -44,6 +44,8 @@ class HeatService : Service() {
         private const val NOTIF_ID = 1
         private const val ALERT_ID = 2
         private const val PERIOD_MS = 100L
+        fun stopIntent(context: Context): Intent =
+            Intent(context, HeatService::class.java).setAction(ACTION_STOP)
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -57,6 +59,7 @@ class HeatService : Service() {
     private var lastReading: Reading? = null
     private var lastMode = ""
     private val history = ArrayDeque<Sample>()
+    private var tickCount = 0
 
     @Volatile private var running = false
     @Volatile private var dutyPercent = 0
@@ -155,6 +158,7 @@ class HeatService : Service() {
             running = true, level = level, reading = r, remainingSec = mins * 60, mode = "boost",
         )
         handler.post(ticker) // first safety check runs immediately
+        FireTileService.requestUpdate(this)
     }
 
     private fun stopFire(reason: String?) {
@@ -164,6 +168,7 @@ class HeatService : Service() {
             running = false, duty = 0f, remainingSec = 0, mode = "", stopReason = reason,
         )
         halt()
+        FireTileService.requestUpdate(this)
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         if (reason != null) postAlert(reason)
         stopSelf()
@@ -252,6 +257,7 @@ class HeatService : Service() {
             running = true, level = level, reading = r, duty = duty,
             remainingSec = remainingSec, mode = lastMode, history = history.toList(),
         )
+        if (++tickCount % 5 == 0) FireTileService.requestUpdate(this)
         getSystemService(NotificationManager::class.java).notify(
             NOTIF_ID,
             buildNotification("%s · %.1f°C · %d min left".format(level.label, bt, (remainingSec + 59) / 60)),

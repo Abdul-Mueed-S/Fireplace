@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Fireplace</string>
+    <string name="tile_label">Fireplace</string>
+    <string name="shortcut_low">Light fire: Low</string>
+    <string name="shortcut_medium">Light fire: Medium</string>
+    <string name="shortcut_high">Light fire: High</string>
 </resources>

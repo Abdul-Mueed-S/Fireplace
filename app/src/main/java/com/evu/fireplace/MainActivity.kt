@@ -9,6 +9,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -22,6 +23,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        /** Used by the Quick Settings tile: light the fire with the remembered level and timer. */
+        const val ACTION_AUTOSTART = "com.evu.fireplace.AUTOSTART"
+        /** Used by the launcher shortcuts (long-press the app icon). */
+        const val ACTION_QUICK_LOW = "com.evu.fireplace.QUICK_LOW"
+        const val ACTION_QUICK_MEDIUM = "com.evu.fireplace.QUICK_MEDIUM"
+        const val ACTION_QUICK_HIGH = "com.evu.fireplace.QUICK_HIGH"
+    }
 
     private lateinit var b: ActivityMainBinding
 
@@ -45,6 +55,15 @@ class MainActivity : AppCompatActivity() {
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
 
+        // Restore what was chosen last time.
+        b.levelGroup.check(buttonFor(Prefs.level(this)))
+        b.timerGroup.check(timerButtonFor(Prefs.minutes(this)))
+        b.switchScreenOn.isChecked = Prefs.keepScreenOn(this)
+        b.switchScreenOn.setOnCheckedChangeListener { _, checked ->
+            Prefs.setKeepScreenOn(this, checked)
+            applyKeepScreenOn(HeatState.ui.value.running)
+        }
+
         b.toggleButton.setOnClickListener {
             if (HeatState.ui.value.running) stopFire() else requestStart()
         }
@@ -55,8 +74,14 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
         // Update the hint and timer preview as soon as a choice changes.
-        b.levelGroup.addOnButtonCheckedListener { _, _, _ -> render(HeatState.ui.value) }
-        b.timerGroup.addOnButtonCheckedListener { _, _, _ -> render(HeatState.ui.value) }
+        b.levelGroup.addOnButtonCheckedListener { _, _, isChecked ->
+            if (isChecked) Prefs.setLevel(this, selectedLevel())
+            render(HeatState.ui.value)
+        }
+        b.timerGroup.addOnButtonCheckedListener { _, _, isChecked ->
+            if (isChecked) Prefs.setMinutes(this, selectedMinutes())
+            render(HeatState.ui.value)
+        }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -73,6 +98,53 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+        }
+
+        if (savedInstanceState == null) handleIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    // ---------------------------------------------------------------- quick actions
+
+    private fun handleIntent(intent: Intent?) {
+        val level = when (intent?.action) {
+            ACTION_QUICK_LOW -> HeatLevel.LOW
+            ACTION_QUICK_MEDIUM -> HeatLevel.MEDIUM
+            ACTION_QUICK_HIGH -> HeatLevel.HIGH
+            ACTION_AUTOSTART -> Prefs.level(this)
+            else -> return
+        }
+        intent?.action = null // so rotating or reopening doesn't light the fire again
+        if (HeatState.ui.value.running) {
+            Toast.makeText(this, "The fire is already burning.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        b.levelGroup.check(buttonFor(level))
+        requestStart()
+    }
+
+    private fun buttonFor(level: HeatLevel): Int = when (level) {
+        HeatLevel.LOW -> R.id.btnLow
+        HeatLevel.MEDIUM -> R.id.btnMedium
+        HeatLevel.HIGH -> R.id.btnHigh
+    }
+
+    private fun timerButtonFor(minutes: Int): Int = when {
+        minutes >= 90 -> R.id.btn90
+        minutes >= 60 -> R.id.btn60
+        else -> R.id.btn30
+    }
+
+    private fun applyKeepScreenOn(running: Boolean) {
+        if (running && Prefs.keepScreenOn(this)) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 
@@ -144,6 +216,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun render(s: HeatUiState) {
+        applyKeepScreenOn(s.running)
         val r = if (s.running) s.reading else (idleReading ?: s.reading)
         val level = if (s.running) s.level else selectedLevel()
 

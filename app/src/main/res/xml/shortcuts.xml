@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:shortcutId="light_high"
+        android:enabled="true"
+        android:icon="@drawable/ic_flame"
+        android:shortcutShortLabel="@string/shortcut_high"
+        android:shortcutLongLabel="@string/shortcut_high">
+        <intent
+            android:action="com.evu.fireplace.QUICK_HIGH"
+            android:targetClass="com.evu.fireplace.MainActivity"
+            android:targetPackage="com.evu.fireplace" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="light_medium"
+        android:enabled="true"
+        android:icon="@drawable/ic_flame"
+        android:shortcutShortLabel="@string/shortcut_medium"
+        android:shortcutLongLabel="@string/shortcut_medium">
+        <intent
+            android:action="com.evu.fireplace.QUICK_MEDIUM"
+            android:targetClass="com.evu.fireplace.MainActivity"
+            android:targetPackage="com.evu.fireplace" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="light_low"
+        android:enabled="true"
+        android:icon="@drawable/ic_flame"
+        android:shortcutShortLabel="@string/shortcut_low"
+        android:shortcutLongLabel="@string/shortcut_low">
+        <intent
+            android:action="com.evu.fireplace.QUICK_LOW"
+            android:targetClass="com.evu.fireplace.MainActivity"
+            android:targetPackage="com.evu.fireplace" />
+    </shortcut>
+</shortcuts>

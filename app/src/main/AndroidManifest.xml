@@ -16,11 +16,16 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Long-press the app icon for Light fire: Low / Medium / High -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <service
@@ -30,6 +35,18 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Runs a thermally supervised CPU load so the phone works as a hand warmer" />
+        </service>
+
+        <!-- Quick Settings tile: swipe down, edit tiles, add "Fireplace" -->
+        <service
+            android:name=".FireTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_flame"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
         </service>
 
         <!-- Lets the app share its CSV logs through the system share sheet -->
