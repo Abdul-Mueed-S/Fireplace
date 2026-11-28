@@ -11,8 +11,8 @@ android {
         applicationId = "com.evu.fireplace"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.5.19"
+        versionCode = 8
+        versionName = "0.7.24"
     }
 
     buildFeatures {
