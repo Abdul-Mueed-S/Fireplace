@@ -1,12 +1,14 @@
 <resources>
     <style name="Theme.Fireplace" parent="Theme.MaterialComponents.NoActionBar">
-        <item name="colorPrimary">#FF7A1A</item>
-        <item name="colorOnPrimary">#1A0F0A</item>
-        <item name="colorSecondary">#FFB347</item>
-        <item name="android:windowBackground">#1A0F0A</item>
-        <item name="android:statusBarColor">#1A0F0A</item>
-        <item name="android:navigationBarColor">#1A0F0A</item>
-        <item name="android:textColorPrimary">#FFF3E6</item>
-        <item name="android:textColorSecondary">#C9A98C</item>
+        <item name="colorPrimary">@color/orange</item>
+        <item name="colorOnPrimary">@color/bg</item>
+        <item name="colorSecondary">@color/amber</item>
+        <item name="colorSurface">@color/card</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
     </style>
 </resources>

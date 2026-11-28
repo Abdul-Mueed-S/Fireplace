@@ -56,6 +56,7 @@ class HeatService : Service() {
     private var startCpuC: Float? = null
     private var lastReading: Reading? = null
     private var lastMode = ""
+    private val history = ArrayDeque<Sample>()
 
     @Volatile private var running = false
     @Volatile private var dutyPercent = 0
@@ -203,6 +204,7 @@ class HeatService : Service() {
                 }
             }, "fire-worker-$i")
             t.start()
+            history.clear()
             workers += t
         }
     }
@@ -243,9 +245,12 @@ class HeatService : Service() {
         lastMode = gov.mode.label
         LogWriter.row(level, r, duty, lastMode)
 
+        history.addLast(Sample(bt, r.cpuC, r.gpuC, r.headroom, duty))
+        if (history.size > HeatState.HISTORY_SIZE) history.removeFirst()
+
         HeatState.ui.value = HeatUiState(
             running = true, level = level, reading = r, duty = duty,
-            remainingSec = remainingSec, mode = lastMode,
+            remainingSec = remainingSec, mode = lastMode, history = history.toList(),
         )
         getSystemService(NotificationManager::class.java).notify(
             NOTIF_ID,
